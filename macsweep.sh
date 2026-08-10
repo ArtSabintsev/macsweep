@@ -61,6 +61,13 @@ row() {
     "$label" "$C_CYN" "$(human_kb "$kb")" "$C_RESET" "$C_DIM" "$note" "$C_RESET"
 }
 
+# A row for an action whose reclaimed bytes cannot be measured up front.
+action_row() {
+  local label="$1" note="${2:-}"
+  flush_head
+  printf '  %-34s %12s  %s%s%s\n' "$label" "—" "$C_DIM" "$note" "$C_RESET"
+}
+
 # ---------------------------------------------------------------- safety
 
 # Only paths under $HOME are ever eligible for deletion, and never $HOME itself
@@ -76,11 +83,17 @@ is_safe_target() {
   return 0
 }
 
+# du prints nothing at all when a path is readable by stat(2) but not by
+# readdir(2) — the shape of a TCC-blocked container. Validate rather than lean
+# on `set -o pipefail` turning that into a non-zero status for an `|| echo 0`
+# fallback to catch; this stays correct if pipefail is ever dropped.
 size_kb() {
-  local total=0 p
+  local total=0 p sz
   for p in "$@"; do
     [[ -e "$p" ]] || continue
-    total=$(( total + $(du -sk "$p" 2>/dev/null | awk '{print $1}' || echo 0) ))
+    sz="$(du -sk "$p" 2>/dev/null | awk 'END{print $1}')"
+    [[ "$sz" =~ ^[0-9]+$ ]] || sz=0
+    total=$(( total + sz ))
   done
   printf '%d' "$total"
 }
@@ -137,23 +150,37 @@ sweep() {
   fi
 }
 
-# sweep_cmd <label> <probe-binary> <command...>  — delegate to a tool's own GC
+# sweep_cmd <label> <probe-binary> <command...>  — delegate to a tool's own GC.
+# The freed bytes are not attributable to a path, so these never touch TOTAL_KB
+# and print no size rather than a misleading "0 KB".
 sweep_cmd() {
   local label="$1" probe="$2"; shift 2
   command -v "$probe" >/dev/null 2>&1 || return 0
   if (( APPLY )); then
-    row "$label" 0 "running: $*"
+    action_row "$label" "running: $*"
     "$@" >/dev/null 2>&1 || warn "    (\"$*\" exited non-zero)"
   else
-    row "$label" 0 "would run: $*"
+    action_row "$label" "would run: $*"
   fi
 }
 
-# note <label> <path>...  — measure and report, never delete
+# note <label> <path>...  — measure and report, never delete.
+# A TCC-blocked path exists but measures 0, which is indistinguishable from
+# "not there" unless we say so; otherwise Mail and Messages quietly vanish from
+# the report on every machine without Full Disk Access.
 note() {
   local label="$1"; shift
   local kb; kb=$(size_kb "$@")
-  (( kb == 0 )) && return 0
+  if (( kb == 0 )); then
+    local p
+    for p in "$@"; do
+      if [[ -e "$p" ]] && ! du -sk "$p" >/dev/null 2>&1; then
+        row "$label" 0 "unreadable — grant Full Disk Access"
+        return 0
+      fi
+    done
+    return 0
+  fi
   row "$label" "$kb" "review manually"
   REPORT_KB=$(( REPORT_KB + kb ))
 }
@@ -166,8 +193,10 @@ run_trash() {
 run_user_caches() {
   head2 "User caches"
   # Deleted wholesale; every app here regenerates its cache on next launch.
-  # A few entries are excluded because emptying them logs you out or is
-  # handled by a dedicated category below.
+  # Two kinds of entry are excluded: ones where emptying the cache loses real
+  # state, and ones owned by a dedicated category below. Without the second
+  # group these subtrees get measured twice in the dry-run total, and `--skip
+  # node` would still lose the Yarn cache to this category.
   local excl=(
     "com.apple.containermanagerd"
     "com.apple.HomeKit"
@@ -175,6 +204,10 @@ run_user_caches() {
     "org.swift.swiftpm"
     "CocoaPods"
     "Homebrew"
+    "com.apple.dt.Xcode"
+    "org.carthage.CarthageKit"
+    "Yarn"
+    "pip"
   )
   local kb=0 keep entry name skipit
   local victims=()
@@ -202,8 +235,9 @@ run_user_caches() {
 
 run_logs() {
   head2 "Logs"
+  # DiagnosticReports lives inside ~/Library/Logs; sweeping it separately would
+  # count the same bytes twice in the dry-run total.
   sweep "~/Library/Logs" "$HOME/Library/Logs"
-  sweep "DiagnosticReports" "$HOME/Library/Logs/DiagnosticReports"
 }
 
 run_xcode() {
@@ -339,12 +373,18 @@ NOTES
 EOF
 }
 
+# `--only` with a missing value used to leave ONLY empty, which means "no
+# filter" — so a typo'd restricted run silently swept everything.
+need_arg() {
+  [[ -n "${2:-}" && "${2:0:1}" != "-" ]] || { err "option $1 requires a value"; exit 2; }
+}
+
 while (( $# )); do
   case "$1" in
     --apply)       APPLY=1 ;;
     -y|--yes)      ASSUME_YES=1 ;;
-    --only)        ONLY="${2:-}"; shift ;;
-    --skip)        SKIP="${2:-}"; shift ;;
+    --only)        need_arg "$1" "${2:-}"; ONLY="$2"; shift ;;
+    --skip)        need_arg "$1" "${2:-}"; SKIP="$2"; shift ;;
     --large)       LARGE=1 ;;
     --list)        LIST=1 ;;
     -h|--help)     usage; exit 0 ;;
@@ -352,6 +392,22 @@ while (( $# )); do
   esac
   shift
 done
+
+# A misspelled category is silent otherwise: it just matches nothing.
+validate_names() {
+  local flag="$1" list="$2" name found entry
+  [[ -n "$list" ]] || return 0
+  local IFS=','
+  for name in $list; do
+    found=0
+    for entry in "${CATEGORIES[@]}"; do
+      [[ "${entry%%|*}" == "$name" ]] && found=1 && break
+    done
+    (( found )) || { err "$flag: unknown category '$name' (see --list)"; exit 2; }
+  done
+}
+validate_names --only "$ONLY"
+validate_names --skip "$SKIP"
 
 if (( LIST )); then
   printf '%sCategories%s\n' "$C_BOLD" "$C_RESET"
@@ -365,9 +421,13 @@ fi
 [[ "$(id -u)" == "0" ]] && { err "Do not run macsweep as root."; exit 1; }
 
 if (( APPLY )) && ! (( ASSUME_YES )); then
+  # Without a tty there is nobody to answer, and `read` would leave $reply
+  # unset — fatal under `set -u`. Refuse rather than guess.
+  [[ -t 0 ]] || { err "--apply needs a tty to confirm; pass -y for unattended runs."; exit 2; }
+  reply=""
   printf '%sThis will permanently delete caches and derived data. Continue? [y/N] %s' \
     "$C_YLW" "$C_RESET"
-  read -r reply
+  read -r reply || reply=""
   [[ "$reply" == [yY]* ]] || { info "Aborted."; exit 0; }
 fi
 
@@ -406,14 +466,23 @@ done
 after_kb="$(df -k / | awk 'NR==2{print $4}')"
 
 head2 "Summary"
+row "Measured on disk" "$TOTAL_KB"
 if (( APPLY )); then
   reclaimed=$(( after_kb - before_kb ))
   (( reclaimed < 0 )) && reclaimed=0
-  row "Actually reclaimed (df delta)" "$reclaimed"
-  row "Free space now" "$after_kb"
-else
-  row "Reclaimable (measured)" "$TOTAL_KB"
-  row "Free space now" "$after_kb"
-  printf '  %s(plus whatever brew/docker/simctl free — not counted above)%s\n' "$C_DIM" "$C_RESET"
+  row "Free space delta (df)" "$reclaimed"
+  # APFS keeps deleted blocks pinned while a Time Machine local snapshot still
+  # references them, so df can report a near-zero delta after a large sweep.
+  # "Measured on disk" is the honest number; this one is the observable one.
+  if (( reclaimed * 2 < TOTAL_KB )); then
+    printf '  %sdf lags the deletes — usually APFS local snapshots still pinning the blocks.%s\n' \
+      "$C_DIM" "$C_RESET"
+  fi
 fi
+row "Free space now" "$after_kb"
 (( REPORT_KB > 0 )) && row "Flagged for manual review" "$REPORT_KB"
+printf '  %s(brew/docker/simctl free additional space not counted above)%s\n' "$C_DIM" "$C_RESET"
+
+# Guard the exit status: the last command above is a conditional that returns 1
+# whenever REPORT_KB is zero, which made successful runs look like failures.
+exit 0

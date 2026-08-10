@@ -53,10 +53,11 @@ A single bash script that reclaims disk space on macOS. Dry-run by default.
 
 ## Full Disk Access
 
-Some paths under `~/Library/Containers` (Mail, Messages, Safari) are gated by
-TCC. Without Full Disk Access granted to your terminal, the script silently
-measures them as 0 and cannot clean them. Grant it under
-**System Settings → Privacy & Security → Full Disk Access**.
+Some paths (Mail, Messages, Safari) are gated by TCC. Without Full Disk Access
+granted to your terminal these exist but cannot be read, so they measure as 0 —
+which is indistinguishable from "not there". The script detects this case and
+labels the row `unreadable — grant Full Disk Access` rather than omitting it.
+Grant access under **System Settings → Privacy & Security → Full Disk Access**.
 
 ## Optional: run it on a schedule
 
