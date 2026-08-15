@@ -11,7 +11,7 @@
 #
 set -uo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 
 APPLY=0
 ASSUME_YES=0
@@ -70,16 +70,35 @@ action_row() {
 
 # ---------------------------------------------------------------- safety
 
+# $HOME may itself be a symlink (e.g. /Users/foo -> /Volumes/Data/foo).
+# Compare resolved paths against this, not the lexical $HOME string.
+HOME_REAL="$(realpath "$HOME" 2>/dev/null || printf '%s' "$HOME")"
+
+_is_forbidden_root() {
+  local p="$1" root="$2"
+  case "$p" in
+    "/"|"$root"|"$root/"|"$root/Library"|"$root/Documents"|"$root/Desktop") return 0 ;;
+  esac
+  return 1
+}
+
 # Only paths under $HOME are ever eligible for deletion, and never $HOME itself
-# or a bare first-level Library directory we did not explicitly name.
+# or a bare first-level Library / Documents / Desktop directory.
+# A symlink is allowed only as a link to remove: its target must still resolve
+# under $HOME, but purge_contents never walks through it.
 is_safe_target() {
   local p="${1:-}"
   [[ -n "$p" ]] || return 1
-  case "$p" in
-    "/"|"$HOME"|"$HOME/"|"$HOME/Library"|"$HOME/Documents"|"$HOME/Desktop") return 1 ;;
-  esac
-  [[ "$p" == "$HOME"/?* ]] || return 1
   [[ "$p" == *".."* ]] && return 1
+  _is_forbidden_root "$p" "$HOME" && return 1
+  [[ "$p" == "$HOME"/?* ]] || return 1
+
+  if [[ -e "$p" || -L "$p" ]]; then
+    local real
+    real="$(realpath "$p" 2>/dev/null)" || return 1
+    _is_forbidden_root "$real" "$HOME_REAL" && return 1
+    [[ "$real" == "$HOME_REAL"/?* ]] || return 1
+  fi
   return 0
 }
 
@@ -98,12 +117,17 @@ size_kb() {
   printf '%d' "$total"
 }
 
-# Delete the *contents* of a directory, leaving the directory itself in place.
+# Delete a file, a symlink (the link only), or the *contents* of a directory.
+# Never follow a symlink: `rm -rf link/` would walk the target; we refuse that.
 purge_contents() {
   local d="$1"
   is_safe_target "$d" || { err "refusing unsafe path: $d"; return 1; }
+  if [[ -L "$d" || -f "$d" ]]; then
+    rm -f -- "$d" 2>/dev/null
+    return 0
+  fi
   [[ -d "$d" ]] || return 0
-  find "$d" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null
+  find -P "$d" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null
 }
 
 # ---------------------------------------------------------------- categories
@@ -118,11 +142,11 @@ CATEGORIES=(
   "swiftpm|Swift Package Manager cache"
   "cocoapods|CocoaPods + Carthage caches"
   "brew|Homebrew downloads and old versions"
-  "node|npm / yarn / pnpm caches"
+  "node|npm / yarn / pnpm / bun caches"
   "python|pip cache"
   "rust|cargo registry cache"
-  "go|Go module cache (slow to rebuild)"
-  "docker|Docker dangling images, containers, build cache"
+  "go|Go module cache + build cache (slow to rebuild)"
+  "docker|Docker unused images, containers, build cache"
   "report|Report-only: things you should decide on yourself"
 )
 
@@ -200,23 +224,39 @@ run_user_caches() {
   local excl=(
     "com.apple.containermanagerd"
     "com.apple.HomeKit"
+    "com.apple.homed"
+    "com.apple.accountsd"
+    "com.apple.appleaccountd"
+    "com.apple.amsaccountsd"
+    "com.apple.passd"
     "CloudKit"
+    "FamilyCircle"
+    "familycircled"
+    "PassKit"
     "org.swift.swiftpm"
     "CocoaPods"
     "Homebrew"
     "com.apple.dt.Xcode"
     "org.carthage.CarthageKit"
     "Yarn"
+    "pnpm"
+    "bun"
+    "deno"
+    "node-gyp"
     "pip"
+    "go-build"
   )
   local kb=0 keep entry name skipit
   local victims=()
   for entry in "$HOME/Library/Caches"/*; do
-    [[ -e "$entry" ]] || continue
+    [[ -e "$entry" || -L "$entry" ]] || continue
     name="$(basename "$entry")"
     skipit=0
     for keep in "${excl[@]}"; do
-      [[ "$name" == "$keep" ]] && skipit=1 && break
+      if [[ "$name" == "$keep" || "$name" == "$keep".* ]]; then
+        skipit=1
+        break
+      fi
     done
     (( skipit )) && continue
     victims+=("$entry")
@@ -227,9 +267,7 @@ run_user_caches() {
   TOTAL_KB=$(( TOTAL_KB + kb ))
   if (( APPLY )); then
     local v
-    for v in "${victims[@]}"; do
-      is_safe_target "$v" && rm -rf -- "$v" 2>/dev/null
-    done
+    for v in "${victims[@]}"; do purge_contents "$v"; done
   fi
 }
 
@@ -259,8 +297,7 @@ run_simulators() {
   [[ -d "$dev/CoreSimulator" ]] || return 0
   head2 "Simulators"
   sweep "CoreSimulator caches" "$dev/CoreSimulator/Caches"
-  local kb; kb=$(size_kb "$dev/CoreSimulator/Devices")
-  row "CoreSimulator/Devices" "$kb" "pruned via simctl, not rm"
+  # Unavailable devices only — the Devices tree as a whole is not deleted.
   sweep_cmd "delete unavailable simulators" xcrun xcrun simctl delete unavailable
 }
 
@@ -293,6 +330,9 @@ run_node() {
   head2 "Node"
   sweep "npm _cacache"   "$HOME/.npm/_cacache"
   sweep "yarn cache"     "$HOME/Library/Caches/Yarn"
+  sweep "pnpm cache"     "$HOME/Library/Caches/pnpm"
+  sweep "bun cache"      "$HOME/.bun/install/cache"
+  sweep "node-gyp cache" "$HOME/Library/Caches/node-gyp"
   sweep_cmd "pnpm store prune" pnpm pnpm store prune
 }
 
@@ -312,12 +352,24 @@ run_rust() {
 run_go() {
   command -v go >/dev/null 2>&1 || return 0
   head2 "Go"
-  local gomod; gomod="$(go env GOMODCACHE 2>/dev/null)"
-  [[ -n "$gomod" && -d "$gomod" ]] || return 0
-  local kb; kb=$(size_kb "$gomod")
-  row "module cache" "$kb" "re-downloads on next build"
-  TOTAL_KB=$(( TOTAL_KB + kb ))
-  if (( APPLY )); then go clean -modcache >/dev/null 2>&1; fi
+  local gomod gocache
+  gomod="$(go env GOMODCACHE 2>/dev/null)"
+  gocache="$(go env GOCACHE 2>/dev/null)"
+  if [[ -n "$gomod" && -d "$gomod" ]]; then
+    local kb; kb=$(size_kb "$gomod")
+    row "module cache" "$kb" "re-downloads on next build"
+    TOTAL_KB=$(( TOTAL_KB + kb ))
+    if (( APPLY )); then
+      if is_safe_target "$gomod"; then
+        go clean -modcache >/dev/null 2>&1
+      else
+        err "refusing go modcache outside home: $gomod"
+      fi
+    fi
+  fi
+  # go-build lives in ~/Library/Caches; excluded from user-caches so --skip go
+  # actually preserves it.
+  [[ -n "$gocache" && -d "$gocache" ]] && sweep "build cache" "$gocache"
 }
 
 run_docker() {
@@ -344,8 +396,10 @@ run_report() {
 
 run_large() {
   head2 "Largest items in \$HOME (top 20)"
+  # head closes the pipe early; without the `|| true`, pipefail would surface
+  # SIGPIPE from sort/du as a failed category.
   du -sk "$HOME"/* "$HOME"/.[!.]* 2>/dev/null \
-    | sort -rn | head -20 \
+    | sort -rn | { head -20 || true; } \
     | while read -r kb path; do row "$(basename "$path")" "$kb" "$path"; done
 }
 
@@ -431,7 +485,7 @@ if (( APPLY )) && ! (( ASSUME_YES )); then
   [[ "$reply" == [yY]* ]] || { info "Aborted."; exit 0; }
 fi
 
-before_kb="$(df -k / | awk 'NR==2{print $4}')"
+before_kb="$(df -k "$HOME" | awk 'NR==2{print $4}')"
 
 if (( APPLY )); then
   printf '%sMode: APPLY — deleting%s\n' "$C_RED$C_BOLD" "$C_RESET"
@@ -463,7 +517,7 @@ done
 
 (( LARGE )) && run_large
 
-after_kb="$(df -k / | awk 'NR==2{print $4}')"
+after_kb="$(df -k "$HOME" | awk 'NR==2{print $4}')"
 
 head2 "Summary"
 row "Measured on disk" "$TOTAL_KB"

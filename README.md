@@ -8,6 +8,7 @@ A single bash script that reclaims disk space on macOS. Dry-run by default.
 ./macsweep.sh --only xcode,brew --apply
 ./macsweep.sh --large            # also list the 20 biggest things in $HOME
 ./macsweep.sh --list             # show categories
+./tests/test.sh                  # fake-$HOME regression tests
 ```
 
 ## What it cleans
@@ -22,10 +23,10 @@ A single bash script that reclaims disk space on macOS. Dry-run by default.
 | `swiftpm` | SwiftPM package cache |
 | `cocoapods` | CocoaPods + Carthage caches |
 | `brew` | `brew cleanup -s --prune=all` and the download cache |
-| `node` | npm `_cacache`, Yarn cache, `pnpm store prune` |
+| `node` | npm `_cacache`, Yarn / pnpm / bun / node-gyp caches, `pnpm store prune` |
 | `python` | pip and uv caches |
 | `rust` | cargo registry cache + src |
-| `go` | `go clean -modcache` |
+| `go` | `go clean -modcache` plus `GOCACHE` (`~/Library/Caches/go-build`) |
 | `docker` | `docker system prune -af` (named volumes are **not** touched) |
 | `report` | measures but never deletes: iOS backups, Downloads, Mail/Messages attachments, Time Machine local snapshots |
 
@@ -48,7 +49,7 @@ A single bash script that reclaims disk space on macOS. Dry-run by default.
   `$HOME`, must not be `$HOME` itself or a bare `Library`/`Documents`/`Desktop`,
   and must not contain `..`.
 - Directory *contents* are removed, not the directories, so apps that assume
-  their cache dir exists keep working.
+  their cache dir exists keep working. Symlinks are unlinked, never followed.
 - Refuses to run as root, and refuses to run off macOS.
 
 ## Full Disk Access
