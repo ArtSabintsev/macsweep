@@ -3,12 +3,19 @@
 A single bash script that reclaims disk space on macOS. Dry-run by default.
 
 ```sh
-./macsweep.sh                    # report what could be freed
-./macsweep.sh --apply            # free it
-./macsweep.sh --only xcode,brew --apply
-./macsweep.sh --large            # also list the 20 biggest things in $HOME
-./macsweep.sh --list             # show categories
-./tests/test.sh                  # fake-$HOME regression tests
+./macsweep.sh                     # what could be freed
+./macsweep.sh xcode brew          # just those categories
+./macsweep.sh --apply             # delete (prompts)
+./macsweep.sh --apply -y xcode    # delete those, no prompt
+./macsweep.sh --large             # also list the 20 biggest things in $HOME
+./macsweep.sh --list              # categories
+./tests/test.sh                   # fake-$HOME regression tests
+```
+
+Put it on your `PATH` if you want `macsweep` instead of `./macsweep.sh`:
+
+```sh
+ln -sf "$(pwd)/macsweep.sh" /usr/local/bin/macsweep
 ```
 
 ## What it cleans
@@ -16,53 +23,44 @@ A single bash script that reclaims disk space on macOS. Dry-run by default.
 | Category | What it removes |
 |---|---|
 | `trash` | `~/.Trash` |
-| `user-caches` | `~/Library/Caches/*`, minus a small keep-list |
-| `logs` | `~/Library/Logs`, `DiagnosticReports` |
-| `xcode` | DerivedData, iOS/watchOS/tvOS DeviceSupport, Xcode caches, Previews |
+| `user-caches` | `~/Library/Caches/*`, minus a keep-list |
+| `logs` | `~/Library/Logs` (includes DiagnosticReports) |
+| `xcode` | DerivedData, *DeviceSupport, Device Logs, Xcode caches, Previews, docs cache |
 | `simulators` | `simctl delete unavailable`, CoreSimulator caches |
 | `swiftpm` | SwiftPM package cache |
 | `cocoapods` | CocoaPods + Carthage caches |
-| `brew` | `brew cleanup -s --prune=all` and the download cache |
-| `node` | npm `_cacache`, Yarn / pnpm / bun / node-gyp caches, `pnpm store prune` |
-| `python` | pip and uv caches |
-| `rust` | cargo registry cache + src |
-| `go` | `go clean -modcache` plus `GOCACHE` (`~/Library/Caches/go-build`) |
+| `brew` | download cache; `brew cleanup -s --prune=all` when brew is available |
+| `node` | npm `_cacache` + `_npx`, Yarn (incl. Berry), pnpm cache + store, bun, node-gyp |
+| `deno` | Deno module cache |
+| `python` | pip + uv caches |
+| `rust` | cargo registry + git caches |
+| `go` | module cache + `GOCACHE` |
 | `docker` | `docker system prune -af` (named volumes are **not** touched) |
-| `report` | measures but never deletes: iOS backups, Downloads, Mail/Messages attachments, Time Machine local snapshots |
+| `report` | measures only: iOS backups, Downloads, Mail/Messages, Playwright, TM snapshots |
 
 ## What it deliberately does not do
 
-- **Xcode Archives** are reported, never deleted. They hold the dSYMs you need
-  to symbolicate crash reports from shipped builds.
-- **Docker named volumes** are excluded from the prune. That is where data lives.
-- **App uninstall + leftover hunting.** Correctly mapping an app bundle to its
-  containers, prefs, launch agents, and privileged helpers needs a per-app
-  database. Guessing by bundle ID deletes the wrong things.
-- **Language file / universal binary stripping.** It breaks code signatures on
-  modern macOS. Cleaner apps abandoned this years ago.
+- **Xcode Archives** — reported, never deleted. They hold dSYMs for shipped-app crashes.
+- **Docker named volumes** — that is where data lives.
+- **App uninstall / leftover hunting** — guessing by bundle ID deletes the wrong things.
+- **Universal-binary stripping** — breaks code signatures on modern macOS.
 - **Anything requiring `sudo`.** The script refuses to run as root.
 
-## Safety model
+## Safety
 
-- Dry run unless `--apply`, and `--apply` prompts unless `-y`.
-- Every deletion path is checked by `is_safe_target`: it must live under
-  `$HOME`, must not be `$HOME` itself or a bare `Library`/`Documents`/`Desktop`,
-  and must not contain `..`.
-- Directory *contents* are removed, not the directories, so apps that assume
-  their cache dir exists keep working. Symlinks are unlinked, never followed.
-- Refuses to run as root, and refuses to run off macOS.
+- Dry-run unless `--apply`. `--apply` prompts unless `-y`.
+- Deletes only under `$HOME`, never `$HOME` itself or a bare `Library`/`Documents`/`Desktop`.
+- Empties directories; leaves the directories. Unlinks symlinks, never follows them.
+- Tool-reported paths (`go env`, `brew --cache`, …) are used only when they resolve under `$HOME`. A redirected `$HOME` never drives brew/docker/simctl against the login home.
+- Leftovers are still path-swept when the matching tool is uninstalled.
+- macOS-only, never as root.
 
 ## Full Disk Access
 
-Some paths (Mail, Messages, Safari) are gated by TCC. Without Full Disk Access
-granted to your terminal these exist but cannot be read, so they measure as 0 —
-which is indistinguishable from "not there". The script detects this case and
-labels the row `unreadable — grant Full Disk Access` rather than omitting it.
-Grant access under **System Settings → Privacy & Security → Full Disk Access**.
+Mail, Messages, and some Containers are TCC-gated. Without Full Disk Access they exist but `du` as 0, which looks like “not there”. The script labels those rows `unreadable — grant Full Disk Access`. Grant it under **System Settings → Privacy & Security → Full Disk Access**.
 
-## Optional: run it on a schedule
+## Cron
 
 ```sh
-# ~/Library/LaunchAgents/com.user.macsweep.plist runs it weekly; or simply:
-0 9 * * 1 /Users/you/Developer/macsweep/macsweep.sh --apply -y >> /tmp/macsweep.log 2>&1
+0 9 * * 1  macsweep --apply -y >> /tmp/macsweep.log 2>&1
 ```
