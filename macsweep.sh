@@ -4,7 +4,7 @@
 #
 set -uo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 INVOKED="$0"
 SELF="$(basename "$0")"
 
@@ -259,6 +259,8 @@ CATEGORIES=(
   "trash|Trash|~/.Trash"
   "user-caches|User caches|~/Library/Caches, minus a keep-list"
   "logs|Logs|~/Library/Logs"
+  "state|Saved state|~/Library/Saved Application State"
+  "browsers|Browser caches|Chrome/Arc/Brave/Edge/Firefox/Safari caches, not profiles"
   "xcode|Xcode|DerivedData, DeviceSupport, caches, Previews"
   "simulators|Simulators|unavailable simulators + CoreSimulator caches"
   "swiftpm|Swift Package Manager|SwiftPM package cache"
@@ -266,11 +268,20 @@ CATEGORIES=(
   "brew|Homebrew|downloads + brew cleanup"
   "node|Node|npm, yarn, pnpm, bun, node-gyp"
   "deno|Deno|Deno module cache"
-  "python|Python|pip + uv caches"
+  "python|Python|pip, uv, poetry caches"
   "rust|Rust|cargo registry + git caches"
   "go|Go|module cache + build cache"
+  "gradle|Gradle|caches, daemon logs, Android build-cache"
+  "maven|Maven|~/.m2/repository"
   "docker|Docker|unused images, containers, build cache"
   "playwright|Playwright|downloaded browser binaries"
+  "vscode|VS Code / Cursor|editor caches, not settings or extensions"
+  "jetbrains|JetBrains|IDE caches, not settings"
+  "ai|AI caches|Hugging Face, torch, whisper; Ollama models kept"
+  "snapshots|APFS snapshots|thin Time Machine local snapshots"
+  "dns|DNS cache|flush via sudo dscacheutil + mDNSResponder"
+  "backups|iOS backups|listed, never deleted"
+  "installers|Disk images|DMG/PKG/ISO in Downloads/Desktop, never deleted"
 )
 
 # Apple/account state. Never auto-delete.
@@ -303,8 +314,15 @@ CACHE_OWNED=(
   node-gyp
   pip
   uv
+  pypoetry
   go-build
   ms-playwright
+  JetBrains
+  gradle
+  huggingface
+  com.microsoft.VSCode
+  com.microsoft.VSCodeInsiders
+  Cursor
 )
 
 _cache_kept() {
@@ -396,6 +414,7 @@ run_python() {
   sweep "uv cache" \
     "$(cmd_home_path "$HOME/.cache/uv" uv uv cache dir)" \
     "$HOME/.cache/uv" "$LCACHE/uv"
+  sweep "poetry cache" "$LCACHE/pypoetry" "$HOME/.cache/pypoetry"
 }
 
 run_rust() {
@@ -429,6 +448,184 @@ run_playwright() {
   [[ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ]] && is_safe_target "$PLAYWRIGHT_BROWSERS_PATH" && d="$PLAYWRIGHT_BROWSERS_PATH"
   sweep "Playwright browsers" --note "re-downloads on next test run" \
     "$d" "$LCACHE/ms-playwright" "$HOME/.cache/ms-playwright"
+}
+
+# Filled by _chromium_more / _electron_editor_more; consumed by the next sweep.
+_MORE=()
+
+# Chromium profile caches under an Application Support product dir.
+# Cookies, History, Local Storage, Login Data are not in this list.
+_chromium_more() {
+  _MORE=()
+  local root="$1" profile
+  [[ -d "$root" ]] || return 0
+  for profile in "$root/Default" "$root/Guest Profile" "$root/System Profile" "$root"/Profile\ *; do
+    [[ -d "$profile" ]] || continue
+    _MORE+=(
+      "$profile/Cache"
+      "$profile/Code Cache"
+      "$profile/GPUCache"
+      "$profile/Service Worker"
+      "$profile/DawnCache"
+      "$profile/Media Cache"
+      "$profile/CacheStorage"
+    )
+  done
+  _MORE+=(
+    "$root/ShaderCache"
+    "$root/GrShaderCache"
+    "$root/GraphiteDawnCache"
+  )
+}
+
+_electron_editor_more() {
+  _MORE=()
+  local root="$1"
+  [[ -d "$root" ]] || return 0
+  _MORE=(
+    "$root/Cache"
+    "$root/CachedData"
+    "$root/CachedExtensions"
+    "$root/CachedExtensionVSIXs"
+    "$root/Code Cache"
+    "$root/GPUCache"
+    "$root/DawnCache"
+    "$root/Service Worker"
+    "$root/Crashpad"
+  )
+}
+
+run_state() {
+  sweep "Saved Application State" "$HOME/Library/Saved Application State"
+}
+
+run_browsers() {
+  local profile victims=()
+
+  _chromium_more "$HOME/Library/Application Support/Google/Chrome"
+  (( ${#_MORE[@]} > 0 )) && sweep "Chrome caches" "${_MORE[@]}"
+  _chromium_more "$HOME/Library/Application Support/Google/Chrome Canary"
+  (( ${#_MORE[@]} > 0 )) && sweep "Chrome Canary caches" "${_MORE[@]}"
+  _chromium_more "$HOME/Library/Application Support/Google/Chrome Beta"
+  (( ${#_MORE[@]} > 0 )) && sweep "Chrome Beta caches" "${_MORE[@]}"
+  _chromium_more "$HOME/Library/Application Support/Chromium"
+  (( ${#_MORE[@]} > 0 )) && sweep "Chromium caches" "${_MORE[@]}"
+  _chromium_more "$HOME/Library/Application Support/BraveSoftware/Brave-Browser"
+  (( ${#_MORE[@]} > 0 )) && sweep "Brave caches" "${_MORE[@]}"
+  _chromium_more "$HOME/Library/Application Support/Microsoft Edge"
+  (( ${#_MORE[@]} > 0 )) && sweep "Edge caches" "${_MORE[@]}"
+  _chromium_more "$HOME/Library/Application Support/Arc/User Data"
+  (( ${#_MORE[@]} > 0 )) && sweep "Arc caches" "${_MORE[@]}"
+  _chromium_more "$HOME/Library/Application Support/Vivaldi"
+  (( ${#_MORE[@]} > 0 )) && sweep "Vivaldi caches" "${_MORE[@]}"
+
+  sweep "Safari webpage previews" "$HOME/Library/Safari/Webpage Previews"
+
+  for profile in "$HOME/Library/Application Support/Firefox/Profiles"/*; do
+    [[ -d "$profile" ]] || continue
+    victims+=(
+      "$profile/cache2"
+      "$profile/startupCache"
+      "$profile/OfflineCache"
+    )
+  done
+  (( ${#victims[@]} > 0 )) && sweep "Firefox caches" "${victims[@]}"
+}
+
+run_gradle() {
+  sweep "Gradle caches" "$HOME/.gradle/caches"
+  sweep "Gradle daemon logs" "$HOME/.gradle/daemon"
+  sweep "Gradle native cache" "$HOME/.gradle/native"
+  sweep "Android cache" "$HOME/.android/cache" "$HOME/.android/build-cache"
+}
+
+run_maven() {
+  sweep "Maven repository" --note "re-downloads on next build" "$HOME/.m2/repository"
+}
+
+run_vscode() {
+  _electron_editor_more "$HOME/Library/Application Support/Code"
+  (( ${#_MORE[@]} > 0 )) && sweep "VS Code caches" "${_MORE[@]}"
+  _electron_editor_more "$HOME/Library/Application Support/Code - Insiders"
+  (( ${#_MORE[@]} > 0 )) && sweep "VS Code Insiders caches" "${_MORE[@]}"
+  _electron_editor_more "$HOME/Library/Application Support/VSCodium"
+  (( ${#_MORE[@]} > 0 )) && sweep "VSCodium caches" "${_MORE[@]}"
+  _electron_editor_more "$HOME/Library/Application Support/Cursor"
+  (( ${#_MORE[@]} > 0 )) && sweep "Cursor caches" "${_MORE[@]}"
+  _electron_editor_more "$HOME/Library/Application Support/Windsurf"
+  (( ${#_MORE[@]} > 0 )) && sweep "Windsurf caches" "${_MORE[@]}"
+  sweep "editor cache dirs" \
+    "$LCACHE/com.microsoft.VSCode" \
+    "$LCACHE/com.microsoft.VSCodeInsiders" \
+    "$LCACHE/Cursor"
+}
+
+run_jetbrains() {
+  sweep "JetBrains caches" "$LCACHE/JetBrains"
+}
+
+run_ai() {
+  local hf="$HOME/.cache/huggingface" torch="$HOME/.cache/torch"
+  [[ -n "${HF_HOME:-}" ]] && is_safe_target "$HF_HOME" && hf="$HF_HOME"
+  [[ -n "${TORCH_HOME:-}" ]] && is_safe_target "$TORCH_HOME" && torch="$TORCH_HOME"
+  sweep "Hugging Face cache" --note "re-downloads on next pull" \
+    "$hf" "$HOME/.cache/huggingface" "$LCACHE/huggingface"
+  sweep "torch cache" "$torch" "$HOME/.cache/torch" "$LCACHE/torch"
+  sweep "whisper cache" "$HOME/.cache/whisper" "$LCACHE/whisper"
+  note "Ollama models (KEEP)" "$HOME/.ollama/models"
+}
+
+run_snapshots() {
+  host_tools_allowed || return 0
+  have tmutil || return 0
+  local n
+  n="$(tmutil listlocalsnapshots / 2>/dev/null | grep -c '^com.apple.' || true)"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  (( n > 0 )) || return 0
+  if (( APPLY )); then
+    action_row "thin local snapshots" "tmutil thinlocalsnapshots ($n found)"
+    tmutil thinlocalsnapshots / 100000000000 4 >/dev/null 2>&1 \
+      || warn "    (tmutil thinlocalsnapshots exited non-zero)"
+  else
+    action_row "local APFS snapshots" \
+      "would run: tmutil thinlocalsnapshots / 100000000000 4 ($n found)"
+  fi
+}
+
+run_dns() {
+  host_tools_allowed || return 0
+  have sudo || return 0
+  if (( APPLY )); then
+    action_row "flush DNS cache" "sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder"
+    sudo dscacheutil -flushcache >/dev/null 2>&1 \
+      && sudo killall -HUP mDNSResponder >/dev/null 2>&1 \
+      || warn "    (DNS flush failed — sudo required)"
+  else
+    action_row "flush DNS cache" \
+      "would run: sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder"
+  fi
+}
+
+run_backups() {
+  note "iOS backups (KEEP)" "$HOME/Library/Application Support/MobileSync/Backup"
+  note "iOS software updates (KEEP)" \
+    "$HOME/Library/iTunes/iPhone Software Updates" \
+    "$HOME/Library/iTunes/iPad Software Updates" \
+    "$HOME/Library/iTunes/iPod Software Updates"
+}
+
+run_installers() {
+  local roots=() found=() f
+  [[ -d "$HOME/Downloads" ]] && roots+=("$HOME/Downloads")
+  [[ -d "$HOME/Desktop" ]] && roots+=("$HOME/Desktop")
+  (( ${#roots[@]} )) || return 0
+  while IFS= read -r -d '' f; do
+    is_safe_target "$f" && found+=("$f")
+  done < <(find -P "${roots[@]}" -maxdepth 2 \
+    \( -name '*.dmg' -o -name '*.pkg' -o -name '*.iso' \) \
+    -type f -print0 2>/dev/null)
+  (( ${#found[@]} )) || return 0
+  note "Disk images (KEEP)" "${found[@]}"
 }
 
 run_large() {
@@ -478,6 +675,9 @@ OPTIONS
 NOTES
   Grant the terminal Full Disk Access (System Settings > Privacy & Security)
   or Mail / Messages / some Containers will read as 0.
+  backups and installers are listed, never deleted.
+  snapshots --apply runs tmutil thinlocalsnapshots (no sudo).
+  dns --apply invokes sudo for dscacheutil and mDNSResponder only.
 EOF
 }
 

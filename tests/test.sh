@@ -36,6 +36,17 @@ out="$("$SWEEP" --list)"
 assert_has "lists user-caches" "$out" user-caches
 assert_has "lists deno"        "$out" deno
 assert_has "lists playwright"  "$out" playwright
+assert_has "lists browsers"    "$out" browsers
+assert_has "lists vscode"      "$out" vscode
+assert_has "lists jetbrains"   "$out" jetbrains
+assert_has "lists gradle"      "$out" gradle
+assert_has "lists maven"       "$out" maven
+assert_has "lists ai"          "$out" ai
+assert_has "lists snapshots"   "$out" snapshots
+assert_has "lists dns"         "$out" dns
+assert_has "lists backups"     "$out" backups
+assert_has "lists installers"  "$out" installers
+assert_has "lists state"       "$out" state
 assert_not_has "does not list report" "$out" report
 
 help="$("$SWEEP" --help)"
@@ -99,9 +110,11 @@ assert "dry-run leaves cache"     test -f "$FAKE/Library/Caches/com.example.app/
 assert "dry-run leaves downloads" test -f "$FAKE/Downloads/keep-me"
 assert "dry-run leaves npx"       test -f "$FAKE/.npm/_npx/pkg/x"
 
-host_out="$(runf brew go docker simulators)"
+host_out="$(runf brew go docker simulators dns snapshots)"
 assert_not_has "redirected HOME skips brew cleanup" "$host_out" "would run: brew cleanup"
 assert_not_has "redirected HOME skips simctl"       "$host_out" "simctl delete"
+assert_not_has "redirected HOME skips DNS flush"    "$host_out" "dscacheutil"
+assert_not_has "redirected HOME skips tmutil"       "$host_out" "tmutil"
 assert_has "dry-run prints replay line"             "$host_out" "Nothing deleted"
 
 # -a -y is --apply --yes. Positionals instead of --only.
@@ -158,6 +171,77 @@ kept "--skip node keeps pnpm" Library/Caches/pnpm/store/p
 seed "Library/Caches/deno/remote/m" deno2
 runf --apply -y user-caches --skip deno >/dev/null
 kept "--skip deno keeps deno cache" Library/Caches/deno/remote/m
+
+seed "Library/Application Support/Google/Chrome/Default/Cache/f" chrome-cache
+seed "Library/Application Support/Google/Chrome/Default/Cookies" chrome-cookies
+seed "Library/Application Support/Google/Chrome/Default/History" chrome-history
+seed "Library/Safari/Webpage Previews/p" safari-preview
+seed "Library/Application Support/Firefox/Profiles/abcd.default/cache2/e" ff-cache
+seed "Library/Application Support/Firefox/Profiles/abcd.default/places.sqlite" ff-places
+seed "Library/Application Support/Code/Cache/c" vscode-cache
+seed "Library/Application Support/Code/User/settings.json" vscode-settings
+seed "Library/Application Support/Cursor/Cache/c" cursor-cache
+seed "Library/Caches/JetBrains/IntelliJIdea2024.1/caches/x" jb-cache
+seed "Library/Application Support/JetBrains/IntelliJIdea2024.1/options/foo.xml" jb-settings
+seed ".gradle/caches/modules-2/files/x" gradle-cache
+seed ".gradle/gradle.properties" gradle-props
+seed ".m2/repository/com/example/a.jar" maven-jar
+seed ".m2/settings.xml" maven-settings
+seed ".cache/huggingface/hub/m" hf
+seed ".cache/torch/hub/t" torch
+seed ".ollama/models/blobs/b" ollama
+seed "Library/Saved Application State/com.example.savedState/windows.plist" saved-state
+seed "Library/Application Support/MobileSync/Backup/uuid/Info.plist" ios-backup
+seed "Library/Caches/pypoetry/art/p" poetry
+printf 'iso\n' > "$FAKE/Downloads/Installer.dmg"
+mkdir -p "$FAKE/Desktop"
+printf 'pkg\n' > "$FAKE/Desktop/App.pkg"
+
+runf --apply -y browsers vscode jetbrains gradle maven ai state python backups installers >/dev/null
+
+gone "chrome cache swept"           "Library/Application Support/Google/Chrome/Default/Cache/f"
+kept "chrome cookies kept"          "Library/Application Support/Google/Chrome/Default/Cookies"
+kept "chrome history kept"          "Library/Application Support/Google/Chrome/Default/History"
+gone "safari previews swept"        "Library/Safari/Webpage Previews/p"
+gone "firefox cache2 swept"         "Library/Application Support/Firefox/Profiles/abcd.default/cache2/e"
+kept "firefox places kept"          "Library/Application Support/Firefox/Profiles/abcd.default/places.sqlite"
+gone "vscode cache swept"           "Library/Application Support/Code/Cache/c"
+kept "vscode settings kept"         "Library/Application Support/Code/User/settings.json"
+gone "cursor cache swept"           "Library/Application Support/Cursor/Cache/c"
+gone "jetbrains caches swept"       "Library/Caches/JetBrains/IntelliJIdea2024.1/caches/x"
+kept "jetbrains settings kept"      "Library/Application Support/JetBrains/IntelliJIdea2024.1/options/foo.xml"
+gone "gradle caches swept"          ".gradle/caches/modules-2/files/x"
+kept "gradle.properties kept"       ".gradle/gradle.properties"
+gone "maven repo swept"             ".m2/repository/com/example/a.jar"
+kept "maven settings kept"          ".m2/settings.xml"
+gone "huggingface cache swept"      ".cache/huggingface/hub/m"
+gone "torch cache swept"            ".cache/torch/hub/t"
+kept "ollama models kept"           ".ollama/models/blobs/b"
+gone "saved state swept"            "Library/Saved Application State/com.example.savedState/windows.plist"
+kept "iOS backup kept"              "Library/Application Support/MobileSync/Backup/uuid/Info.plist"
+gone "poetry cache swept via python" "Library/Caches/pypoetry/art/p"
+kept "Downloads dmg kept"           "Downloads/Installer.dmg"
+kept "Desktop pkg kept"             "Desktop/App.pkg"
+
+seed "Library/Caches/JetBrains/IntelliJIdea2024.1/caches/x" jb2
+seed "Library/Caches/pypoetry/art/p" poetry2
+runf --apply -y --only user-caches >/dev/null
+kept "user-caches leaves JetBrains" Library/Caches/JetBrains/IntelliJIdea2024.1/caches/x
+kept "user-caches leaves pypoetry"  Library/Caches/pypoetry/art/p
+jb_out="$(runf jetbrains)"
+assert_has "jetbrains lists caches" "$jb_out" "JetBrains caches"
+py_out="$(runf python)"
+assert_has "python lists poetry cache" "$py_out" "poetry cache"
+runf --apply -y jetbrains python >/dev/null
+gone "jetbrains category sweeps JetBrains" Library/Caches/JetBrains/IntelliJIdea2024.1/caches/x
+gone "python category sweeps pypoetry"    Library/Caches/pypoetry/art/p
+
+backup_out="$(runf backups)"
+assert_has "backups listed as kept" "$backup_out" "iOS backups"
+assert_has "backups marked kept"    "$backup_out" "kept"
+inst_out="$(runf installers)"
+assert_has "installers listed as kept" "$inst_out" "Disk images"
+assert_has "installers marked kept"    "$inst_out" "kept"
 
 printf '%s\n' "totals"
 mkdir -p "$FAKE/Library/Caches/Yarn/v6"
