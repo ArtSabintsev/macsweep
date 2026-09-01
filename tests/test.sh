@@ -35,6 +35,8 @@ printf '%s\n' "cli"
 out="$("$SWEEP" --list)"
 assert_has "lists user-caches" "$out" user-caches
 assert_has "lists deno"        "$out" deno
+assert_has "lists playwright"  "$out" playwright
+assert_not_has "does not list report" "$out" report
 
 help="$("$SWEEP" --help)"
 assert_has "help lists categories" "$help" user-caches
@@ -91,7 +93,7 @@ printf 'doc\n' > "$FAKE/Documents/secret.txt"
 printf 'dl\n'  > "$FAKE/Downloads/keep-me"
 ln -s "$FAKE/Documents/secret.txt" "$FAKE/Library/Caches/evil-link"
 
-runf trash user-caches logs node python report >/dev/null
+runf trash user-caches logs node python playwright >/dev/null
 assert "dry-run leaves trash"     test -f "$FAKE/.Trash/old/file"
 assert "dry-run leaves cache"     test -f "$FAKE/Library/Caches/com.example.app/sub/a"
 assert "dry-run leaves downloads" test -f "$FAKE/Downloads/keep-me"
@@ -103,7 +105,7 @@ assert_not_has "redirected HOME skips simctl"       "$host_out" "simctl delete"
 assert_has "dry-run prints replay line"             "$host_out" "Nothing deleted"
 
 # -a -y is --apply --yes. Positionals instead of --only.
-runf -a -y trash user-caches logs node python report >/dev/null
+runf -a -y trash user-caches logs node python playwright >/dev/null
 
 gone() { assert "$1" test ! -e "$FAKE/$2"; }
 kept() { assert "$1" test -e "$FAKE/$2"; }
@@ -127,10 +129,11 @@ kept "HomeKit keep-list survives"   Library/Caches/com.apple.HomeKit/keep/x
 kept "Homebrew keep-list survives"  Library/Caches/Homebrew/downloads/t
 kept "go-build keep-list survives"  Library/Caches/go-build/aa/o
 kept "deno keep-list survives"      Library/Caches/deno/remote/m
-kept "playwright keep-list survives" Library/Caches/ms-playwright/chromium/b
+gone "playwright browsers swept"    Library/Caches/ms-playwright/chromium/b
+kept "playwright dir remains"       Library/Caches/ms-playwright
 assert "symlink not followed"       test -f "$FAKE/Documents/secret.txt"
 assert "cache symlink removed"      test ! -e "$FAKE/Library/Caches/evil-link"
-kept "report-only leaves Downloads" Downloads/keep-me
+kept "Downloads left alone"         Downloads/keep-me
 
 runf --apply -y brew go deno xcode simulators rust >/dev/null
 gone "brew leftovers swept without host brew"   Library/Caches/Homebrew/downloads/t
@@ -145,7 +148,6 @@ gone "iOS Device Logs swept"                    "Library/Developer/Xcode/iOS Dev
 gone "CoreSimulator caches swept"               Library/Developer/CoreSimulator/Caches/dyld/c
 gone "cargo registry swept"                     .cargo/registry/cache/c/r
 gone "cargo git swept"                          .cargo/git/db/g/d
-kept "playwright still not auto-deleted"        Library/Caches/ms-playwright/chromium/b
 
 seed "Library/Caches/Yarn/v6/pkg" yarn2
 seed "Library/Caches/pnpm/store/p" pnpm2
@@ -166,8 +168,12 @@ assert_not_has "user-caches does not list Yarn" "$user_out" Yarn
 assert_has     "node lists yarn cache"          "$node_out" "yarn cache"
 assert_not_has "user-caches does not list yarn cache" "$user_out" "yarn cache"
 
-report_out="$(runf report)"
-assert_has "report lists Playwright" "$report_out" Playwright
+seed "Library/Caches/ms-playwright/chromium/b" pw2
+pw_out="$(runf playwright)"
+assert_has "playwright category names browsers" "$pw_out" Playwright
+
+user_skip_pw="$(runf --only user-caches)"
+assert_not_has "user-caches does not list playwright" "$user_skip_pw" "Playwright"
 
 large_out="$(runf --large trash)"
 assert_has "--large lists Documents" "$large_out" Documents

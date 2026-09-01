@@ -3,6 +3,15 @@
 A single bash script that reclaims disk space on macOS. Dry-run by default.
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/ArtSabintsev/macsweep/main/macsweep.sh -o macsweep
+chmod +x macsweep
+./macsweep                     # what could be freed
+./macsweep --apply             # delete (prompts)
+```
+
+Or clone it:
+
+```sh
 ./macsweep.sh                     # what could be freed
 ./macsweep.sh xcode brew          # just those categories
 ./macsweep.sh --apply             # delete (prompts)
@@ -36,12 +45,13 @@ ln -sf "$(pwd)/macsweep.sh" /usr/local/bin/macsweep
 | `rust` | cargo registry + git caches |
 | `go` | module cache + `GOCACHE` |
 | `docker` | `docker system prune -af` (named volumes are **not** touched) |
-| `report` | measures only: iOS backups, Downloads, Mail/Messages, Playwright, TM snapshots |
+| `playwright` | downloaded Chromium / Firefox / WebKit binaries (`~/Library/Caches/ms-playwright`) |
 
 ## What it deliberately does not do
 
-- **Xcode Archives** — reported, never deleted. They hold dSYMs for shipped-app crashes.
+- **Xcode Archives** — shown as kept, never deleted. They hold dSYMs for shipped-app crashes.
 - **Docker named volumes** — that is where data lives.
+- **Downloads, Mail, Messages, iOS backups** — user data, not caches.
 - **App uninstall / leftover hunting** — guessing by bundle ID deletes the wrong things.
 - **Universal-binary stripping** — breaks code signatures on modern macOS.
 - **Anything requiring `sudo`.** The script refuses to run as root.

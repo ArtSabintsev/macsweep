@@ -4,7 +4,7 @@
 #
 set -uo pipefail
 
-VERSION="0.4.0"
+VERSION="1.0.0"
 INVOKED="$0"
 SELF="$(basename "$0")"
 
@@ -16,7 +16,6 @@ LIST=0
 LARGE=0
 
 TOTAL_KB=0
-REPORT_KB=0
 
 LCACHE="$HOME/Library/Caches"
 LDEV="$HOME/Library/Developer"
@@ -250,8 +249,7 @@ note() {
     done
     return 0
   fi
-  row "$label" "$kb" "review manually"
-  REPORT_KB=$(( REPORT_KB + kb ))
+  row "$label" "$kb" "kept"
 }
 
 # ---------------------------------------------------------------- categories
@@ -272,10 +270,10 @@ CATEGORIES=(
   "rust|Rust|cargo registry + git caches"
   "go|Go|module cache + build cache"
   "docker|Docker|unused images, containers, build cache"
-  "report|Report only|measured, never deleted"
+  "playwright|Playwright|downloaded browser binaries"
 )
 
-# Apple/account state, or report-only (Playwright — slow to restore).
+# Apple/account state. Never auto-delete.
 CACHE_KEEP=(
   com.apple.containermanagerd
   com.apple.HomeKit
@@ -288,7 +286,6 @@ CACHE_KEEP=(
   FamilyCircle
   familycircled
   PassKit
-  ms-playwright
 )
 
 # ~/Library/Caches entries a dedicated category already sweeps.
@@ -307,6 +304,7 @@ CACHE_OWNED=(
   pip
   uv
   go-build
+  ms-playwright
 )
 
 _cache_kept() {
@@ -426,17 +424,11 @@ run_docker() {
   sweep_cmd "docker system prune" docker system prune -af
 }
 
-run_report() {
-  note "iOS device backups"   "$HOME/Library/Application Support/MobileSync/Backup"
-  note "Downloads"            "$HOME/Downloads"
-  note "Mail downloads"       "$HOME/Library/Containers/com.apple.mail/Data/Library/Mail Downloads"
-  note "Messages attachments" "$HOME/Library/Messages/Attachments"
-  note "Playwright browsers"  "$LCACHE/ms-playwright"
-  local snaps
-  snaps="$(tmutil listlocalsnapshots / 2>/dev/null | grep -c 'com.apple.TimeMachine' || true)"
-  if [[ "${snaps:-0}" -gt 0 ]]; then
-    row "Time Machine local snapshots" 0 "$snaps found — 'tmutil deletelocalsnapshots <date>'"
-  fi
+run_playwright() {
+  local d="$LCACHE/ms-playwright"
+  [[ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ]] && is_safe_target "$PLAYWRIGHT_BROWSERS_PATH" && d="$PLAYWRIGHT_BROWSERS_PATH"
+  sweep "Playwright browsers" --note "re-downloads on next test run" \
+    "$d" "$LCACHE/ms-playwright" "$HOME/.cache/ms-playwright"
 }
 
 run_large() {
@@ -601,7 +593,6 @@ if (( APPLY )); then
   fi
 fi
 row "Free space now" "$after_kb"
-(( REPORT_KB > 0 )) && row "Flagged for manual review" "$REPORT_KB"
 printf '  %s(brew/docker/simctl free additional space not counted above)%s\n' "$C_DIM" "$C_RESET"
 
 if ! (( APPLY )); then
